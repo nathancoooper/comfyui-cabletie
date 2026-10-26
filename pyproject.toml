@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-cabletie"
 description = "Bundle ComfyUI wires into ribbons with cable ties."
-version = "0.2.1"
+version = "0.2.2"
 license = { file = "LICENSE" }
 dependencies = []
 

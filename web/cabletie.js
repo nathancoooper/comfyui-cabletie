@@ -9,9 +9,9 @@
  * Holding C and dragging across a tie, or double-clicking it, also cuts it.
  *
  * Tied wires are parallel offsets of one bundle centreline, so a ribbon keeps
- * the same gap all the way through — including right out of the socket, where
- * the strands stay spread instead of squeezing into a wedge on the way out of
- * the dot. Bands and strands are springs: a new tie
+ * the same gap all the way through. Wires sharing one socket leave the dot
+ * together and open out over FAN_LEN before running parallel; wires with a
+ * socket each keep their own ends. Bands and strands are springs: a new tie
  * grows out and gathers its wires in, a dragged tie trails and settles, and a
  * cut tie leaves a ghost that lets the wires fan back to their own curves.
  *
@@ -33,7 +33,7 @@ const CONTROL_FACTOR = 0.25;
 const SAMPLES = 32;
 const BAR_HALF_WIDTH = 2.1; // half the band's thickness
 const BAR_PAD = 3.2; // how far the band reaches past the outermost wire
-const ANCHOR_SPREAD = 7; // how far a wire may sit off a socket's centre, in graph units
+const FAN_LEN = 20; // graph units a bundle takes to open out of a socket
 const HANDLE_GAP_PX = 9; // gap between the band's end and the rotate knob
 const HANDLE_RADIUS_PX = 4.5;
 const ROTATE_SNAP = Math.PI / 12; // 15 degrees, while Shift is held
@@ -347,19 +347,6 @@ function strandPoint(canvas, tie, linkId) {
   return [tie.pos[0] + n[0] * off, tie.pos[1] + n[1] * off];
 }
 
-/**
- * Where this wire sits where it meets a socket. A tied wire keeps its place in
- * the bundle all the way to the dot, so the strands never squeeze into a wedge
- * between the node and the first tie — they read as one ribbon leaving the node.
- * The spread is capped so even a wide bundle still lands inside the dot, and the
- * outermost wires simply open out to their full place on the way to the tie.
- */
-function socketOffset(canvas, tie, linkId) {
-  if (!tie) return 0;
-  const off = strandOffset(canvas, tie, linkId);
-  return Math.max(-ANCHOR_SPREAD, Math.min(ANCHOR_SPREAD, off));
-}
-
 /** Ties on this link, ordered from output to input. */
 function orderedTies(linkId, a, b) {
   const list = state.index.get(linkId);
@@ -371,11 +358,31 @@ function orderedTies(linkId, a, b) {
   );
 }
 
+/**
+ * Does another wire in this bundle leave from the same dot? Wires that share a
+ * socket all start at one point, so the bundle has to open out of it. Wires with
+ * a socket each start at their *own* points and already converge on the tie by
+ * themselves — fanning those would push the outer ones outwards first.
+ */
+function sharedSocket(linkId, point, end) {
+  for (const tie of state.index.get(linkId) ?? []) {
+    for (const id of tie.links) {
+      if (id === linkId) continue;
+      const ep = state.endpoints.get(id);
+      const p = end === "a" ? ep?.a : ep?.b;
+      if (p && Math.hypot(p[0] - point[0], p[1] - point[1]) < 0.5) return true;
+    }
+  }
+  return false;
+}
+
 /** Segments the link is drawn as, in renderLink terms. */
 function route(canvas, linkId, a, b, sd, ed) {
   const ties = orderedTies(linkId, a, b);
   if (!ties.length) return [{ a, b, sd, ed }];
   const views = ties.map(liveTie);
+  const fromShared = sharedSocket(linkId, a, "a");
+  const toShared = sharedSocket(linkId, b, "b");
 
   // The wire on its own. Every segment blends back toward its own piece of
   // this as the tie it belongs to lets go, so a cut tie hands the wires back
@@ -402,37 +409,116 @@ function route(canvas, linkId, a, b, sd, ed) {
     const A = chain[i];
     const B = chain[i + 1];
     const base = segmentCubic(A, B, sd, ed);
-    const d0 = A.tie ? strandOffset(canvas, A.tie, linkId) : socketOffset(canvas, B.tie, linkId);
-    const d1 = B.tie ? strandOffset(canvas, B.tie, linkId) : socketOffset(canvas, A.tie, linkId);
-    const off = offsetCubic(base, d0, d1);
-
-    let p0 = off.p0;
-    let p3 = off.p3;
-    let c0 = [off.p0[0] + off.startControl[0], off.p0[1] + off.startControl[1]];
-    let c1 = [off.p3[0] + off.endControl[0], off.p3[1] + off.endControl[1]];
+    // Both ends are anchors the wire has to pass through: it leaves a socket from
+    // the dot itself and sits at its own place along a band. A run that starts or
+    // ends at a socket is opened out over FAN_LEN (see fanPieces) instead of
+    // creeping apart over its whole length, so the wires stop lying on top of each
+    // other just past the dot.
+    const d0 = A.tie ? strandOffset(canvas, A.tie, linkId) : 0;
+    const d1 = B.tie ? strandOffset(canvas, B.tie, linkId) : 0;
+    const pieces = fanPieces(base, naturalSegs[i], d0, d1, !A.tie && fromShared, !B.tie && toShared);
 
     const r0 = releaseOf(A.tie);
     const r1 = releaseOf(B.tie);
-    if (r0 > 0 || r1 > 0) {
-      const nat = naturalSegs[i];
-      const rs = Math.max(r0, r1); // the curve only relaxes once both its ends have
-      // Ends follow their own anchor, so neighbouring segments still meet.
-      p0 = mixPoint(p0, nat.p0, r0);
-      p3 = mixPoint(p3, nat.p3, r1);
-      c0 = mixPoint(c0, nat.c0, rs);
-      c1 = mixPoint(c1, nat.c1, rs);
-    }
+    const rs = Math.max(r0, r1); // the curve only relaxes once both its ends have
 
-    segs.push({
-      a: p0,
-      b: p3,
-      sd: A.dir ? DIR.CENTER : sd,
-      ed: B.dir ? DIR.CENTER : ed,
-      startControl: [c0[0] - p0[0], c0[1] - p0[1]],
-      endControl: [c1[0] - p3[0], c1[1] - p3[1]],
-    });
+    for (const piece of pieces) {
+      const off = offsetCubic(piece.base, piece.d0, piece.d1);
+      const nat = piece.nat;
+
+      let p0 = off.p0;
+      let p3 = off.p3;
+      let c0 = [off.p0[0] + off.startControl[0], off.p0[1] + off.startControl[1]];
+      let c1 = [off.p3[0] + off.endControl[0], off.p3[1] + off.endControl[1]];
+
+      if (r0 > 0 || r1 > 0) {
+        // Ends follow their own anchor, so neighbouring segments still meet.
+        p0 = mixPoint(p0, nat.p0, r0);
+        p3 = mixPoint(p3, nat.p3, r1);
+        c0 = mixPoint(c0, nat.c0, rs);
+        c1 = mixPoint(c1, nat.c1, rs);
+      }
+
+      segs.push({
+        a: p0,
+        b: p3,
+        sd: A.dir ? DIR.CENTER : sd,
+        ed: B.dir ? DIR.CENTER : ed,
+        startControl: [c0[0] - p0[0], c0[1] - p0[1]],
+        endControl: [c1[0] - p3[0], c1[1] - p3[1]],
+        skipBorder: piece.skipBorder,
+      });
+    }
   }
   return segs;
+}
+
+/**
+ * Cut a socket-side run in two so the wires reach their full spacing a short way
+ * out of the dot and stay parallel after that.
+ *
+ * The offset has to be zero at the socket — that is where the wires meet — so a
+ * plain linear ramp spreads it over the entire run, which leaves four wires
+ * lying on top of each other for a long way past the node and reads as one fat
+ * smudged cable. Compressing the ramp into `FAN_LEN` of arc leaves the rest of
+ * the run exactly parallel, and because the pieces are cut from the same cubic
+ * the wire itself stays smooth.
+ */
+function fanPieces(base, nat, d0, d1, fromSocket, toSocket) {
+  const cut = fromSocket && !toSocket ? arcT(base, FAN_LEN, true) : toSocket && !fromSocket ? arcT(base, FAN_LEN, false) : 0;
+  if (cut <= 0.03 || cut >= 0.97) return [{ base, nat, d0, d1 }];
+  const [b1, b2] = splitSeg(base, cut);
+  const [n1, n2] = splitCubic(nat, cut);
+  if (fromSocket && !toSocket) {
+    return [
+      // The ramp out of the dot carries no border: four borders stacked on top of
+      // one another at a few units apart paint a solid black wedge, and it is the
+      // border — not the wire — that reads as a shadow lying over the bundle. The
+      // run past the ramp is drawn normally, so the sleeve starts where the wires
+      // have already reached their spacing.
+      { base: b1, nat: n1, d0, d1, skipBorder: true },
+      { base: b2, nat: n2, d0: d1, d1 },
+    ];
+  }
+  return [
+    { base: b1, nat: n1, d0, d1: d0 },
+    { base: b2, nat: n2, d0, d1, skipBorder: true },
+  ];
+}
+
+/** `splitCubic`, but keeping the normals each piece's ends are offset along. */
+function splitSeg(seg, t) {
+  const [left, right] = splitCubic(seg, t);
+  const n = cubicNormal(seg, t) ?? seg.n0;
+  left.n0 = seg.n0;
+  left.n3 = n;
+  right.n0 = n;
+  right.n3 = seg.n3;
+  return [left, right];
+}
+
+/** Parameter at which `seg` has covered `len` of arc length from one of its ends. */
+function arcT(seg, len, fromStart) {
+  const steps = SAMPLES * 4;
+  let total = 0;
+  let prevT = 0;
+  let prev = cubicPoint(seg, 0);
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const p = cubicPoint(seg, t);
+    const step = Math.hypot(p[0] - prev[0], p[1] - prev[1]);
+    // Interpolate inside the step that crosses the mark: returning its far end
+    // would make the fan up to one sample too long, and on a node-scale run that
+    // is a visible fraction of FAN_LEN.
+    if (total + step >= len) {
+      const u = prevT + (t - prevT) * (step > 1e-9 ? (len - total) / step : 0);
+      return fromStart ? u : 1 - u;
+    }
+    total += step;
+    prevT = t;
+    prev = p;
+  }
+  return fromStart ? 1 : 0;
 }
 
 function mixPoint(p, q, t) {
@@ -552,13 +638,18 @@ function cubicNormal(seg, t) {
  * bundle bunch up. The offset curve is sampled and then refitted to a cubic,
  * so the canvas can still draw each wire in a single call.
  *
- * How far the wire sits off the centreline at parameter `t` is linear between
- * the two ends: both ends are anchors it has to pass through, and spreading the
- * offsets evenly keeps neighbouring wires from closing up or crossing over
- * between them.
+ * How far the wire sits off the centreline at parameter `t` runs between the two
+ * ends' offsets — both are anchors the wire has to pass through, and a monotonic
+ * spread is what stops neighbouring wires closing up or crossing over between
+ * them. The shape between them is eased (see below) rather than straight.
  */
 function offsetProfile(d0, d1) {
-  return (t) => d0 + (d1 - d0) * t;
+  // Smoothstep, not a straight line. The offset is pinned at both ends, so a
+  // linear ramp leaves a slope break where a fan meets its parallel run and the
+  // wire is visibly creased there. Easing both ends keeps the tangent continuous
+  // through the join, and it also leaves the bundle travelling along the natural
+  // curve at the dot instead of splaying straight out of it.
+  return (t) => d0 + (d1 - d0) * (t * t * (3 - 2 * t));
 }
 
 function offsetCubic(seg, d0, d1) {
@@ -1178,11 +1269,11 @@ function installRendering(canvas) {
       this.linkMarkerShape = MARKER_NONE;
       for (let i = 1; i < segs.length; i++) {
         const s = segs[i];
-        origRenderLink.call(this, ctx, s.a, s.b, link, skipBorder, flow, segColor, s.sd, s.ed, { ...opts, startControl: s.startControl, endControl: s.endControl });
+        origRenderLink.call(this, ctx, s.a, s.b, link, s.skipBorder ?? skipBorder, flow, segColor, s.sd, s.ed, { ...opts, startControl: s.startControl, endControl: s.endControl });
       }
       this.linkMarkerShape = marker;
       const s = segs[0];
-      origRenderLink.call(this, ctx, s.a, s.b, link, skipBorder, flow, segColor, s.sd, s.ed, { ...opts, startControl: s.startControl, endControl: s.endControl });
+      origRenderLink.call(this, ctx, s.a, s.b, link, s.skipBorder ?? skipBorder, flow, segColor, s.sd, s.ed, { ...opts, startControl: s.startControl, endControl: s.endControl });
     } finally {
       this.linkMarkerShape = marker;
       state.rendering = false;
