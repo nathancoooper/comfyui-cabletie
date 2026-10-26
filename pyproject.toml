@@ -1,0 +1,10 @@
+[project]
+name = "comfyui-cabletie"
+description = "Bundle ComfyUI wires into ribbons with cable ties."
+version = "0.1.0"
+license = { file = "LICENSE" }
+dependencies = []
+
+[tool.comfy]
+DisplayName = "Cable Tie"
+includes = ["web"]
