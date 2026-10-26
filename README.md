@@ -32,6 +32,38 @@ one end of the band:
 * Double-click the knob to unpin, and the band snaps back onto the wires.
 * Hold **`Shift`** while rotating to snap to 15° steps.
 
+### Spacing
+
+A tied bundle is routed from **one** centreline: each wire is the same curve
+pushed sideways by a fixed amount along its own normal, so the strands run
+parallel and keep the same gap the whole way through the tie — no crossing, no
+pinching at the ends, and no wire slowly drifting into its neighbour as nodes
+move. The offsets are sampled along the curve and fitted back to a single cubic,
+so each wire is still drawn in one call.
+
+### Feel
+
+The bands and the wires are springs, not switches. A drag trails the cursor and
+overshoots a little before it settles; a new tie grows out of nothing while its
+wires are drawn in, and a deleted tie lets its wires go and they fan back out to
+where they would have been. Nothing snaps, jumps or flickers at a boundary.
+
+A cut tie animates on a **ghost** of itself: the record is gone from the workflow
+immediately (save, load and undo all see it gone), but the wires keep routing
+through it for the ~15 frames it takes to spring open, then it disappears. Add
+the tie back before the animation ends (undo) and the ghost gives way at once.
+
+The motion is tuned for a cable-tie-sized flick rather than a wobble — roughly
+0.6 damping, so about one overshoot and done. If you want to change it, the
+constants sit together near the top of `web/cabletie.js`:
+
+| Constant | Effect |
+|---|---|
+| `SPRING.pos` / `.angle` / `.cinch` / `.release` | stiffness and damping per spring |
+| `SETTLE`, `SETTLE_V` | how still a spring must be before it stops ticking |
+| `CINCH_START` / `CINCH_MIN` | how much longer a brand-new band is than its rest length |
+| `MAX_STEP` | longest timestep a frame may take (a stalled tab catches up, it doesn't leap) |
+
 Ties draw on top of the wires, so a selected band never hides under a link. Only
 one tie is selected at a time, and selecting a tie drops any node selection, so
 `Delete` is never ambiguous.
@@ -114,6 +146,17 @@ Both wrappers bail out of anything they don't own — already-internal calls,
 reroutes, custom control points, and a different graph on the same canvas — and
 undo is registered through the workflow's own `changeTracker`, so `Cmd/Ctrl+Z`
 reverts a tie exactly like any other graph edit.
+
+Everything you see comes from the springs' **live** state, never from the stored
+record: the record is only the target. `drawConnections` steps them (sub-stepped
+at 120 Hz, with a `MAX_STEP` clamp so a backgrounded tab can't jump), re-routes
+the wires from where they actually are, then draws. A tie that is letting go
+blends its segment back toward the link's own curve — its endpoints, then the
+shape of the curve, control points, and the strand offsets — so the wires are
+handed back to the renderer exactly where it would have drawn them.
+
+The redraw loop is ComfyUI's: a spring that is still moving marks the canvas
+dirty and the next frame steps it again, so an idle graph costs nothing.
 
 ## Credits
 
