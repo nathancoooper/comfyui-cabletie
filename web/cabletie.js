@@ -9,7 +9,9 @@
  * Holding C and dragging across a tie, or double-clicking it, also cuts it.
  *
  * Tied wires are parallel offsets of one bundle centreline, so a ribbon keeps
- * the same gap all the way through. Bands and strands are springs: a new tie
+ * the same gap all the way through — including right out of the socket, where
+ * the strands stay spread instead of squeezing into a wedge on the way out of
+ * the dot. Bands and strands are springs: a new tie
  * grows out and gathers its wires in, a dragged tie trails and settles, and a
  * cut tie leaves a ghost that lets the wires fan back to their own curves.
  *
@@ -31,6 +33,7 @@ const CONTROL_FACTOR = 0.25;
 const SAMPLES = 32;
 const BAR_HALF_WIDTH = 2.1; // half the band's thickness
 const BAR_PAD = 3.2; // how far the band reaches past the outermost wire
+const ANCHOR_SPREAD = 7; // how far a wire may sit off a socket's centre, in graph units
 const HANDLE_GAP_PX = 9; // gap between the band's end and the rotate knob
 const HANDLE_RADIUS_PX = 4.5;
 const ROTATE_SNAP = Math.PI / 12; // 15 degrees, while Shift is held
@@ -344,6 +347,19 @@ function strandPoint(canvas, tie, linkId) {
   return [tie.pos[0] + n[0] * off, tie.pos[1] + n[1] * off];
 }
 
+/**
+ * Where this wire sits where it meets a socket. A tied wire keeps its place in
+ * the bundle all the way to the dot, so the strands never squeeze into a wedge
+ * between the node and the first tie — they read as one ribbon leaving the node.
+ * The spread is capped so even a wide bundle still lands inside the dot, and the
+ * outermost wires simply open out to their full place on the way to the tie.
+ */
+function socketOffset(canvas, tie, linkId) {
+  if (!tie) return 0;
+  const off = strandOffset(canvas, tie, linkId);
+  return Math.max(-ANCHOR_SPREAD, Math.min(ANCHOR_SPREAD, off));
+}
+
 /** Ties on this link, ordered from output to input. */
 function orderedTies(linkId, a, b) {
   const list = state.index.get(linkId);
@@ -386,8 +402,8 @@ function route(canvas, linkId, a, b, sd, ed) {
     const A = chain[i];
     const B = chain[i + 1];
     const base = segmentCubic(A, B, sd, ed);
-    const d0 = A.tie ? strandOffset(canvas, A.tie, linkId) : 0;
-    const d1 = B.tie ? strandOffset(canvas, B.tie, linkId) : 0;
+    const d0 = A.tie ? strandOffset(canvas, A.tie, linkId) : socketOffset(canvas, B.tie, linkId);
+    const d1 = B.tie ? strandOffset(canvas, B.tie, linkId) : socketOffset(canvas, A.tie, linkId);
     const off = offsetCubic(base, d0, d1);
 
     let p0 = off.p0;
@@ -535,8 +551,18 @@ function cubicNormal(seg, t) {
  * through a bend — offset endpoints alone converge in the middle and let the
  * bundle bunch up. The offset curve is sampled and then refitted to a cubic,
  * so the canvas can still draw each wire in a single call.
+ *
+ * How far the wire sits off the centreline at parameter `t` is linear between
+ * the two ends: both ends are anchors it has to pass through, and spreading the
+ * offsets evenly keeps neighbouring wires from closing up or crossing over
+ * between them.
  */
+function offsetProfile(d0, d1) {
+  return (t) => d0 + (d1 - d0) * t;
+}
+
 function offsetCubic(seg, d0, d1) {
+  const at = offsetProfile(d0, d1);
   const p0 = [seg.p0[0] + seg.n0[0] * d0, seg.p0[1] + seg.n0[1] * d0];
   const p3 = [seg.p3[0] + seg.n3[0] * d1, seg.p3[1] + seg.n3[1] * d1];
   if (!d0 && !d1) {
@@ -557,7 +583,7 @@ function offsetCubic(seg, d0, d1) {
       nx = n[0];
       ny = n[1];
     }
-    const d = d0 + (d1 - d0) * t;
+    const d = at(t);
     const rx = q[0] + nx * d - w0 * p0[0] - w3 * p3[0];
     const ry = q[1] + ny * d - w0 * p0[1] - w3 * p3[1];
     a11 += w1 * w1;

@@ -41,6 +41,12 @@ pinching at the ends, and no wire slowly drifting into its neighbour as nodes
 move. The offsets are sampled along the curve and fitted back to a single cubic,
 so each wire is still drawn in one call.
 
+That includes the very start of the run. A wire leaving a node keeps its place in
+the bundle all the way to the socket, so the strands read as one ribbon coming
+out of the dot rather than converging into a wedge a little way along. The spread
+is capped at `ANCHOR_SPREAD` graph units so a wide bundle still lands inside the
+socket; anything past the cap opens out to full width on the way to the tie.
+
 ### Feel
 
 The bands and the wires are springs, not switches. A drag trails the cursor and
@@ -62,6 +68,7 @@ constants sit together near the top of `web/cabletie.js`:
 | `SPRING.pos` / `.angle` / `.cinch` / `.release` | stiffness and damping per spring |
 | `SETTLE`, `SETTLE_V` | how still a spring must be before it stops ticking |
 | `CINCH_START` / `CINCH_MIN` | how much longer a brand-new band is than its rest length |
+| `ANCHOR_SPREAD` | how far off a socket's centre a wire may sit (a wider bundle fans out towards the tie) |
 | `MAX_STEP` | longest timestep a frame may take (a stalled tab catches up, it doesn't leap) |
 
 Ties draw on top of the wires, so a selected band never hides under a link. Only
